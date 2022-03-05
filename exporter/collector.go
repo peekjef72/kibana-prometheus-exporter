@@ -10,14 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	"github.com/peekjef72/kibana-prometheus-exporter/config"
 )
 
 // KibanaCollector collects the Kibana information together to be used by
 // the exporter to scrape metrics.
 type KibanaCollector struct {
 	// url is the base URL of the Kibana instance or the service
-	url string
+	kibana *config.KibanaConfig
+	logger log.Logger
 
 	// authHeader is the string that should be used as the value
 	// for the "Authorization" header. If this is empty, it is
@@ -66,14 +69,14 @@ type KibanaMetrics struct {
 }
 
 // TestConnection checks whether the connection to Kibana is healthy
-func (c *KibanaCollector) TestConnection() bool {
-	log.Debug().
-		Msg("checking for kibana status")
+func (c *KibanaCollector) TestConnection(logger log.Logger) bool {
+	level.Debug(logger).
+		Log("msg", "checking for kibana status")
 
 	_, err := c.scrape()
 	if err != nil {
-		log.Info().
-			Msgf("test connection to kibana failed: %s", err)
+		level.Info(logger).
+			Log("msg", fmt.Sprintf("test connection to kibana failed: %s", err))
 		return false
 	}
 
@@ -81,39 +84,39 @@ func (c *KibanaCollector) TestConnection() bool {
 }
 
 // WaitForConnection is a method to block until Kibana becomes available
-func (c *KibanaCollector) WaitForConnection() {
+func (c *KibanaCollector) WaitForConnection(logger log.Logger) {
 	for {
-		if !c.TestConnection() {
-			log.Info().
-				Msg("waiting for kibana to be responsive")
+		if !c.TestConnection(logger) {
+			level.Info(logger).
+				Log("msg", "waiting for kibana to be responsive")
 
 			// hardcoded since it's unlikely this is user controlled
 			time.Sleep(10 * time.Second)
 			continue
 		}
 
-		log.Info().
-			Msg("kibana is up")
+		level.Info(logger).
+			Log("msg", "kibana is up")
 		return
 	}
 }
 
 // NewCollector builds a KibanaCollector struct
-func NewCollector(kibanaURI, kibanaUsername, kibanaPassword string, kibanaSkipTLS bool) (*KibanaCollector, error) {
+func NewCollector(kibana *config.KibanaConfig, logger log.Logger) (*KibanaCollector, error) {
 	collector := &KibanaCollector{}
-	collector.url = kibanaURI
+	collector.kibana = kibana
+	collector.logger = logger
+	if strings.HasPrefix(kibana.Protocol, "https") {
+		level.Debug(logger).
+			Log("msg", fmt.Sprintf("kibana URL is a TLS one: %s", kibana.Url()))
 
-	if strings.HasPrefix(kibanaURI, "https://") {
-		log.Debug().
-			Msgf("kibana URL is a TLS one: %s", kibanaURI)
-
-		if kibanaSkipTLS {
-			log.Info().
-				Msgf("skipping TLS verification for Kibana URL: %s", kibanaURI)
+		if kibana.SkipTls() {
+			level.Info(logger).
+				Log("msg", fmt.Sprintf("skipping TLS verification for Kibana URL: %s", kibana.Url()))
 		}
 
 		tConf := &tls.Config{
-			InsecureSkipVerify: kibanaSkipTLS,
+			InsecureSkipVerify: kibana.SkipTls(),
 		}
 
 		tr := &http.Transport{
@@ -124,26 +127,26 @@ func NewCollector(kibanaURI, kibanaUsername, kibanaPassword string, kibanaSkipTL
 			Transport: tr,
 		}
 	} else {
-		log.Debug().
-			Msgf("kibana URL is a plain text one: %s", kibanaURI)
+		level.Debug(logger).
+			Log("msg", fmt.Sprintf("kibana URL is a plain text one: %s", kibana.Url()))
 
 		collector.client = &http.Client{}
-		if kibanaSkipTLS {
-			log.Info().
-				Msgf("kibana.skip-tls is enabled for an http URL, ignoring: %s", kibanaURI)
+		if kibana.SkipTls() {
+			level.Info(logger).
+				Log("msg", fmt.Sprintf("kibana.skip-tls is enabled for an http URL, ignoring: %s", kibana.Url()))
 		}
 	}
 
-	if kibanaUsername != "" && kibanaPassword != "" {
-		log.Debug().
-			Msg("using authenticated requests with Kibana")
+	if kibana.Username != "" && kibana.Password != "" {
+		level.Debug(logger).
+			Log("msg", "using authenticated requests with Kibana")
 
-		creds := fmt.Sprintf("%s:%s", kibanaUsername, kibanaPassword)
+		creds := fmt.Sprintf("%s:%s", kibana.Username, kibana.Password)
 		encCreds := base64.StdEncoding.EncodeToString([]byte(creds))
 		collector.authHeader = fmt.Sprintf("Basic %s", encCreds)
 	} else {
-		log.Info().
-			Msg("Kibana username or password is not provided, assuming unauthenticated communication")
+		level.Info(logger).
+			Log("Kibana username or password is not provided, assuming unauthenticated communication")
 	}
 
 	return collector, nil
@@ -153,24 +156,24 @@ func NewCollector(kibanaURI, kibanaUsername, kibanaPassword string, kibanaSkipTL
 // provided by the KibanaCollector struct, and return the metrics as a
 // KibanaMetrics representation.
 func (c *KibanaCollector) scrape() (*KibanaMetrics, error) {
-	log.Debug().
-		Msg("building request for api/status from kibana")
+	level.Debug(c.logger).
+		Log("msg", "building request for api/status from kibana")
 
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/status", c.url), nil)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/status", c.kibana.Url()), nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not initialize a request to scrape metrics: %s", err)
 	}
 
 	if c.authHeader != "" {
-		log.Debug().
-			Msg("adding auth header")
+		level.Debug(c.logger).
+			Log("msg", "adding auth header")
 		req.Header.Add("Authorization", c.authHeader)
 	}
 
 	req.Header.Add("Accept", "application/json")
 
-	log.Debug().
-		Msg("requesting api/status from kibana")
+	level.Debug(c.logger).
+		Log("msg", "requesting api/status from kibana")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error while reading Kibana status: %s", err)
@@ -178,8 +181,8 @@ func (c *KibanaCollector) scrape() (*KibanaMetrics, error) {
 
 	defer resp.Body.Close()
 
-	log.Debug().
-		Msg("processing api/status response")
+	level.Debug(c.logger).
+		Log("processing api/status response")
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("invalid response from Kibana status: %s", resp.Status)

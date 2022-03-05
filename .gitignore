@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-kibana-prometheus-exporter
+kibana_exporter
 build/
 
 # Test binary, built with `go test -c`
@@ -22,3 +22,7 @@ build/
 
 # temp
 tmp/
+
+# Visual studio files
+*.code-workspace
+.vscode/

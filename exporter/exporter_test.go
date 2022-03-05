@@ -5,7 +5,9 @@ import (
 )
 
 func TestNewExporterWithoutNamespace(t *testing.T) {
-	_, err := NewExporter("", &KibanaCollector{})
+	colls := make([]*KibanaCollector, 1)
+	colls = append(colls, &KibanaCollector{})
+	_, err := NewExporter("", colls, false, nil)
 	if err == nil {
 		t.Errorf("expected error when invalid namespace was provided")
 	}

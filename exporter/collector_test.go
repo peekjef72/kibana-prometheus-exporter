@@ -2,6 +2,8 @@ package exporter
 
 import (
 	"testing"
+
+	"github.com/peekjef72/kibana-prometheus-exporter/config"
 )
 
 // auth header tests
@@ -89,7 +91,16 @@ func isAuthHeaderEmpty(c *KibanaCollector) bool {
 func TestNewCollectorAuthHeader(t *testing.T) {
 	for _, ct := range collectorTests {
 		t.Run(ct.desc, func(t *testing.T) {
-			collector, err := NewCollector(ct.uri, ct.username, ct.password, ct.skipTLS)
+			kibana := &config.KibanaConfig{
+				Name:     "default",
+				Protocol: "",
+				Host:     "",
+				Port:     "",
+				Username: ct.username,
+				Password: ct.password,
+			}
+			kibana.SetDefault(ct.uri, ct.skipTLS, false)
+			collector, err := NewCollector(kibana, nil)
 			if err != nil {
 				t.Errorf("NewCollector failed with valid input")
 			}

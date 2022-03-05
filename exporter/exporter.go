@@ -1,19 +1,23 @@
 package exporter
 
 import (
-	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog/log"
 )
 
 // Exporter implements the prometheus.Collector interface. This will
 // be used to register the metrics with Prometheus.
 type Exporter struct {
-	lock      sync.RWMutex
-	collector *KibanaCollector
+	logger     log.Logger
+	lock       sync.RWMutex
+	Collectors []*KibanaCollector
+	target     *KibanaCollector
+	debug      bool
 
 	// metrics
 	status                prometheus.Gauge
@@ -33,14 +37,12 @@ type Exporter struct {
 // NewExporter will create a Exporter struct and initialize the metrics
 // that will be scraped by Prometheus. It will use the provided Kibana
 // details to populate a KibanaCollector struct.
-func NewExporter(namespace string, collector *KibanaCollector) (*Exporter, error) {
-	namespace = strings.TrimSpace(namespace)
-	if namespace == "" {
-		return nil, errors.New("namespace cannot be empty")
-	}
+func NewExporter(namespace string, collectors []*KibanaCollector, debug bool, logger log.Logger) (*Exporter, error) {
 
 	exporter := &Exporter{
-		collector: collector,
+		logger:     logger,
+		Collectors: collectors,
+		debug:      debug,
 
 		status: prometheus.NewGauge(
 			prometheus.GaugeOpts{
@@ -119,11 +121,17 @@ func NewExporter(namespace string, collector *KibanaCollector) (*Exporter, error
 	return exporter, nil
 }
 
+//
+func (e *Exporter) SetTarget(target *KibanaCollector) error {
+	e.target = target
+	return nil
+}
+
 // parseMetrics will set the metrics values using the KibanaMetrics
 // struct, converting values to float64 where needed.
 func (e *Exporter) parseMetrics(m *KibanaMetrics) error {
-	log.Trace().
-		Msg("parsing received metrics from kibana")
+	level.Debug(e.logger).
+		Log("parsing received metrics from kibana")
 
 	// any value other than "green" is assumed to be less than 1
 	statusVal := 0.0
@@ -183,37 +191,43 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect is the Exporter implementing prometheus.Collector
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	log.Trace().
-		Msg("a Collect() call received")
+	level.Debug(e.logger).
+		Log("msg", "a Collect() call received")
 
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	log.Trace().
-		Msg("issueing a scrape() call to the collector")
+	level.Debug(e.logger).
+		Log("msg", "issueing a scrape() call to the collector")
 
-	metrics, err := e.collector.scrape()
+	if e.target == nil {
+		level.Error(e.logger).
+			Log("msg", "target not set: Can't scrape.")
+		return
+
+	}
+	metrics, err := e.target.scrape()
 	if err != nil {
-		log.Error().
-			Msgf("error while scraping metrics from Kibana: %s", err)
+		level.Error(e.logger).
+			Log("msg", fmt.Sprintf("error while scraping metrics from Kibana: %s", err))
 		return
 	}
 
 	// output for debugging
-	log.Debug().
-		Interface("metrics", metrics).
-		Msg("returned metrics content")
+	level.Debug(e.logger).
+		// Interface("metrics", metrics).
+		Log("msg", "returned metrics content")
 
 	err = e.parseMetrics(metrics)
 	if err != nil {
-		log.Error().
-			Msgf("error while parsing metrics from Kibana: %s", err)
+		level.Error(e.logger).
+			Log("msg", fmt.Sprintf("error while parsing metrics from Kibana: %s", err))
 		return
 	}
 
 	err = e.send(ch)
 	if err != nil {
-		log.Error().
-			Msgf("error while responding to Prometheus with metrics: %s", err)
+		level.Error(e.logger).
+			Log("msg", fmt.Sprintf("error while responding to Prometheus with metrics: %s", err))
 	}
 }
