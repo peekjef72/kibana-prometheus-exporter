@@ -1,9 +1,17 @@
 kibanas:
   - name: kibana
-    protocol: https
+    # protocol: https
+    host: localhost
+    # port: 443
+    skip-tls: true
+    # username: kibana_exporter
+    # password: Kibana_p@ass
+    wait: no
+  - name: kibana-invalid
+    # protocol: https
     host: localhost
     port: 443
     skip-tls: true
-    username: kibana_exporter
-    password: Kibana_p@ass
+    # username: kibana_exporter
+    # password: Kibana_p@ass
     wait: no

@@ -30,22 +30,27 @@ var (
 	kibanaSkipTLS  = kingpin.Flag("kibana.skip-tls", "Skip TLS verification for TLS secured Kibana URLs").Short('d').Default("false").Bool()
 	debug          = kingpin.Flag("debug", "Output verbose details during metrics collection, use for development only").Short('s').Default("false").Bool()
 	wait           = kingpin.Flag("wait", "Wait for Kibana to be responsive before starting, setting this to false would cause the exporter to error out instead of waiting").Short('w').Default("false").Bool()
+	target         = kingpin.Flag("target", "in try mode specify the target to check. Default is firstof the list").Short('t').String()
 	namespace      = "kibana"
 	exporter_name  = "kibana_exporter"
 )
 
 //***********************************************************************************************
-func handler(w http.ResponseWriter, r *http.Request, exporter *exporter.Exporter) {
+func handler(w http.ResponseWriter, r *http.Request, kib_exporter *exporter.Exporter) {
 	params := r.URL.Query()
 	target := params.Get("target")
 	if target == "" {
-		exporter.SetTarget(exporter.Collectors[0])
+		kib_exporter.SetTarget(kib_exporter.Collectors[0])
 	} else {
-		exporter.SetTarget(exporter.Collectors[0])
-
+		found := kib_exporter.FindTarget(target)
+		if found == nil {
+			http.Error(w, "specified target not found!", 404)
+			return
+		}
+		kib_exporter.SetTarget(found)
 	}
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(exporter)
+	registry.MustRegister(kib_exporter)
 	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	h.ServeHTTP(w, r)
 }
@@ -113,7 +118,7 @@ func main() {
 		}
 		collectors = append(collectors, collector)
 	}
-	exporter, err := exporter.NewExporter(namespace, collectors, *debug, logger)
+	kib_exporter, err := exporter.NewExporter(namespace, collectors, *debug, logger)
 	if err != nil {
 		level.Error(logger).
 			Log("msg", fmt.Sprintf("error while initializing exporter: %s", err))
@@ -126,9 +131,20 @@ func main() {
 		level.Info(logger).Log("msg", fmt.Sprintf("%s runs once in dry-mode (output to stdout).", exporter_name))
 
 		registry := prometheus.NewRegistry()
-		registry.MustRegister(exporter)
+		registry.MustRegister(kib_exporter)
 
-		exporter.SetTarget(collectors[0])
+		var found_tg *exporter.KibanaCollector
+		if *target != "" {
+			found_tg = kib_exporter.FindTarget(*target)
+			if found_tg == nil {
+				level.Error(logger).Log("msg", "target not found in config file", "target", *target)
+				os.Exit(1)
+
+			}
+		} else {
+			found_tg = collectors[0]
+		}
+		kib_exporter.SetTarget(found_tg)
 		mfs, err := registry.Gather()
 		if err != nil {
 			level.Error(logger).Log("Errmsg", "Error gathering metrics", "err", err)
@@ -159,7 +175,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	prometheus.MustRegister(exporter)
+	prometheus.MustRegister(kib_exporter)
 
 	var landingPage = []byte(`<html>
 			<head><title>Kibana Exporter</title></head>
@@ -176,7 +192,7 @@ func main() {
 	})
 
 	http.HandleFunc(*metricsPath, func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, exporter)
+		handler(w, r, kib_exporter)
 	})
 	level.Info(logger).Log("msg", "Listening on address", "address", *listenAddress)
 	if err := http.ListenAndServe(*listenAddress, nil); err != nil {

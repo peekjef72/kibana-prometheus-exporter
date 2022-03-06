@@ -18,8 +18,12 @@ import (
 // KibanaCollector collects the Kibana information together to be used by
 // the exporter to scrape metrics.
 type KibanaCollector struct {
-	// url is the base URL of the Kibana instance or the service
-	kibana *config.KibanaConfig
+	// state of the client reachable or not
+	State bool
+
+	// config of the Kibana instance or the service
+	kibana config.KibanaConfig
+	// reference to global looger
 	logger log.Logger
 
 	// authHeader is the string that should be used as the value
@@ -32,8 +36,14 @@ type KibanaCollector struct {
 	client *http.Client
 }
 
+//"version":{"number":"7.17.1","build_hash":"78e8422ed4e7d2054bd35b82a91299b3f7bd6231","build_number":46635,"build_snapshot":false},
+//"status":{"overall":{"since":"2022-03-06T10:35:22.586Z","state":"yellow","title":"Yellow","nickname":"I'll be back","icon":"warning","uiColor":"warning"}
 // KibanaMetrics is used to unmarshal the metrics response from Kibana.
 type KibanaMetrics struct {
+	VersionPart struct {
+		Version string `json:"number"`
+		Build   int    `json:"build_number"`
+	} `json:"version"`
 	Status struct {
 		Overall struct {
 			State string `json:"state"`
@@ -104,7 +114,7 @@ func (c *KibanaCollector) WaitForConnection(logger log.Logger) {
 // NewCollector builds a KibanaCollector struct
 func NewCollector(kibana *config.KibanaConfig, logger log.Logger) (*KibanaCollector, error) {
 	collector := &KibanaCollector{}
-	collector.kibana = kibana
+	collector.kibana = *kibana
 	collector.logger = logger
 	if strings.HasPrefix(kibana.Protocol, "https") {
 		level.Debug(logger).
@@ -146,7 +156,7 @@ func NewCollector(kibana *config.KibanaConfig, logger log.Logger) (*KibanaCollec
 		collector.authHeader = fmt.Sprintf("Basic %s", encCreds)
 	} else {
 		level.Info(logger).
-			Log("Kibana username or password is not provided, assuming unauthenticated communication")
+			Log("msg", "Kibana username or password is not provided, assuming unauthenticated communication")
 	}
 
 	return collector, nil
@@ -176,15 +186,18 @@ func (c *KibanaCollector) scrape() (*KibanaMetrics, error) {
 		Log("msg", "requesting api/status from kibana")
 	resp, err := c.client.Do(req)
 	if err != nil {
+		c.State = false
 		return nil, fmt.Errorf("error while reading Kibana status: %s", err)
 	}
+	c.State = true
 
 	defer resp.Body.Close()
 
 	level.Debug(c.logger).
-		Log("processing api/status response")
+		Log("msg", "processing api/status response")
 
 	if resp.StatusCode != http.StatusOK {
+		c.State = false
 		return nil, fmt.Errorf("invalid response from Kibana status: %s", resp.Status)
 	}
 

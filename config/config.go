@@ -15,8 +15,6 @@ type KibanaConfigs struct {
 
 	// Catches all undefined fields and must be empty after parsing.
 	XXX map[string]interface{} `yaml:",inline" json:"-"`
-
-	kibanaByName map[string][]KibanaConfig
 }
 
 type KibanaConfig struct {
@@ -59,15 +57,6 @@ func Load(configFile string) (*KibanaConfigs, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// kibanas.kibanaByName = make(map[string][]kibanaConfig)
-
-	// for _, proto := range []string{"tcp", "udp", "tcp6", "udp6"} {
-	// 	socks := sockets.getSocketProtocol(proto)
-	// 	if len(socks) > 0 {
-	// 		sockets.socksByType[proto] = socks
-	// 	}
-	// }
 
 	return &kibanas, nil
 }

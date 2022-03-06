@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,8 +20,11 @@ type Exporter struct {
 	target     *KibanaCollector
 	debug      bool
 
+	KibanaByName map[string]*KibanaCollector
+
 	// metrics
 	status                prometheus.Gauge
+	info                  *prometheus.GaugeVec
 	concurrentConnections prometheus.Gauge
 	uptime                prometheus.Gauge
 	heapTotal             prometheus.Gauge
@@ -34,6 +38,8 @@ type Exporter struct {
 	reqTotal              prometheus.Gauge
 }
 
+var InfosLabels = []string{"version", "build"}
+
 // NewExporter will create a Exporter struct and initialize the metrics
 // that will be scraped by Prometheus. It will use the provided Kibana
 // details to populate a KibanaCollector struct.
@@ -44,12 +50,24 @@ func NewExporter(namespace string, collectors []*KibanaCollector, debug bool, lo
 		Collectors: collectors,
 		debug:      debug,
 
+		// up: prometheus.NewGauge(
+		// 	prometheus.GaugeOpts{
+		// 		Name:      "up",
+		// 		Help:      "Kibana acces is OK (0: down, 1:up)",
+		// 		Namespace: namespace,
+		// 	}),
 		status: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name:      "status",
-				Help:      "Kibana overall status",
+				Help:      "Kibana overall status (0: down, 1:up)",
 				Namespace: namespace,
 			}),
+		info: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name:      "info",
+				Help:      "Kibana overall info, version build; see labels, always 1",
+				Namespace: namespace,
+			}, InfosLabels),
 		concurrentConnections: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name:      "concurrent_connections",
@@ -117,21 +135,39 @@ func NewExporter(namespace string, collectors []*KibanaCollector, debug bool, lo
 				Help:      "Kibana total request count",
 			}),
 	}
+	// initialize the map
+	exporter.KibanaByName = make(map[string]*KibanaCollector)
+	// build the map with the name of each kibana's name
+	for _, coll := range exporter.Collectors {
+		exporter.KibanaByName[coll.kibana.Name] = coll
+	}
 
 	return exporter, nil
 }
 
+//*************************************************************************************************
 //
 func (e *Exporter) SetTarget(target *KibanaCollector) error {
 	e.target = target
 	return nil
 }
 
+//*************************************************************************************************
+
+// try to find a kibana config that matchs the specified target's name
+// target: string as specified in ymal config file.
+
+func (e *Exporter) FindTarget(target string) *KibanaCollector {
+	return e.KibanaByName[target]
+}
+
+//*************************************************************************************************
+
 // parseMetrics will set the metrics values using the KibanaMetrics
 // struct, converting values to float64 where needed.
 func (e *Exporter) parseMetrics(m *KibanaMetrics) error {
 	level.Debug(e.logger).
-		Log("parsing received metrics from kibana")
+		Log("msg", "parsing received metrics from kibana")
 
 	// any value other than "green" is assumed to be less than 1
 	statusVal := 0.0
@@ -140,42 +176,52 @@ func (e *Exporter) parseMetrics(m *KibanaMetrics) error {
 	}
 
 	e.status.Set(statusVal)
+	if statusVal == 1.0 {
+		// info is always 1; labels may change
+		labels := make([]string, len(InfosLabels))
+		labels[0] = m.VersionPart.Version
+		labels[1] = fmt.Sprintf("%d", m.VersionPart.Build)
+		e.info.WithLabelValues(labels[:]...).Set(1.0)
 
-	e.concurrentConnections.Set(float64(m.Metrics.ConcurrentConnections))
-	e.uptime.Set(float64(m.Metrics.Process.UptimeInMillis))
-	e.heapTotal.Set(float64(m.Metrics.Process.Memory.Heap.TotalInBytes))
-	e.heapUsed.Set(float64(m.Metrics.Process.Memory.Heap.UsedInBytes))
-	e.load1m.Set(m.Metrics.Os.Load.Load1m)
-	e.load5m.Set(m.Metrics.Os.Load.Load5m)
-	e.load15m.Set(m.Metrics.Os.Load.Load15m)
-	e.respTimeAvg.Set(m.Metrics.ResponseTimes.AvgInMillis)
-	e.respTimeMax.Set(m.Metrics.ResponseTimes.MaxInMillis)
-	e.reqDisconnects.Set(float64(m.Metrics.Requests.Disconnects))
-	e.reqTotal.Set(float64(m.Metrics.Requests.Total))
+		e.concurrentConnections.Set(float64(m.Metrics.ConcurrentConnections))
+		e.uptime.Set(float64(m.Metrics.Process.UptimeInMillis))
+		e.heapTotal.Set(float64(m.Metrics.Process.Memory.Heap.TotalInBytes))
+		e.heapUsed.Set(float64(m.Metrics.Process.Memory.Heap.UsedInBytes))
+		e.load1m.Set(m.Metrics.Os.Load.Load1m)
+		e.load5m.Set(m.Metrics.Os.Load.Load5m)
+		e.load15m.Set(m.Metrics.Os.Load.Load15m)
+		e.respTimeAvg.Set(m.Metrics.ResponseTimes.AvgInMillis)
+		e.respTimeMax.Set(m.Metrics.ResponseTimes.MaxInMillis)
+		e.reqDisconnects.Set(float64(m.Metrics.Requests.Disconnects))
+		e.reqTotal.Set(float64(m.Metrics.Requests.Total))
+	}
 
 	return nil
 }
 
 func (e *Exporter) send(ch chan<- prometheus.Metric) error {
 	ch <- e.status
-	ch <- e.concurrentConnections
-	ch <- e.uptime
-	ch <- e.heapTotal
-	ch <- e.heapUsed
-	ch <- e.load1m
-	ch <- e.load5m
-	ch <- e.load15m
-	ch <- e.respTimeAvg
-	ch <- e.respTimeMax
-	ch <- e.reqDisconnects
-	ch <- e.reqTotal
-
+	if e.target.State {
+		e.info.Collect(ch)
+		ch <- e.concurrentConnections
+		ch <- e.uptime
+		ch <- e.heapTotal
+		ch <- e.heapUsed
+		ch <- e.load1m
+		ch <- e.load5m
+		ch <- e.load15m
+		ch <- e.respTimeAvg
+		ch <- e.respTimeMax
+		ch <- e.reqDisconnects
+		ch <- e.reqTotal
+	}
 	return nil
 }
 
 // Describe is the Exporter implementing prometheus.Collector
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.status.Desc()
+	e.info.Describe(ch)
 	ch <- e.concurrentConnections.Desc()
 	ch <- e.uptime.Desc()
 	ch <- e.heapTotal.Desc()
@@ -210,21 +256,30 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	if err != nil {
 		level.Error(e.logger).
 			Log("msg", fmt.Sprintf("error while scraping metrics from Kibana: %s", err))
-		return
 	}
 
-	// output for debugging
-	level.Debug(e.logger).
-		// Interface("metrics", metrics).
-		Log("msg", "returned metrics content")
+	if e.target.State {
+		// output for debugging
+		if e.debug {
+			res, err := json.Marshal(metrics)
+			if err != nil {
+				level.Error(e.logger).
+					Log("msg", fmt.Sprintf("error convert to json: %s", err))
+			} else {
+				level.Debug(e.logger).
+					Log("msg", "returned metrics content", "metrics", res)
+			}
+		}
 
-	err = e.parseMetrics(metrics)
-	if err != nil {
-		level.Error(e.logger).
-			Log("msg", fmt.Sprintf("error while parsing metrics from Kibana: %s", err))
-		return
+		err = e.parseMetrics(metrics)
+		if err != nil {
+			level.Error(e.logger).
+				Log("msg", fmt.Sprintf("error while parsing metrics from Kibana: %s", err))
+			return
+		}
+	} else {
+		e.status.Set(0.0)
 	}
-
 	err = e.send(ch)
 	if err != nil {
 		level.Error(e.logger).
